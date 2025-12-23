@@ -1,0 +1,165 @@
+# RenderCV SaaS - Docker Compose Configuration
+# Use: docker compose up -d
+
+version: "3.8"
+
+services:
+  # ==========================================================================
+  # API Server
+  # ==========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    container_name: rendercv-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://rendercv:${DB_PASSWORD:-rendercv}@db:5432/rendercv
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - DEBUG=${DEBUG:-false}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - STORAGE_PATH=/app/storage
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+    volumes:
+      - rendercv-storage:/app/storage
+      - rendercv-logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - rendercv-network
+
+  # ==========================================================================
+  # Background Worker
+  # ==========================================================================
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    container_name: rendercv-worker
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://rendercv:${DB_PASSWORD:-rendercv}@db:5432/rendercv
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - STORAGE_PATH=/app/storage
+      - STORAGE_BACKEND=${STORAGE_BACKEND:-local}
+    volumes:
+      - rendercv-storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - rendercv-network
+
+  # ==========================================================================
+  # PostgreSQL Database
+  # ==========================================================================
+  db:
+    image: postgres:16-alpine
+    container_name: rendercv-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=rendercv
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-rendercv}
+      - POSTGRES_DB=rendercv
+    volumes:
+      - rendercv-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rendercv -d rendercv"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rendercv-network
+
+  # ==========================================================================
+  # Redis (for job queue and caching)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: rendercv-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - rendercv-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - rendercv-network
+
+  # ==========================================================================
+  # Nginx Reverse Proxy (Production)
+  # ==========================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: rendercv-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - api
+    networks:
+      - rendercv-network
+    profiles:
+      - production
+
+  # ==========================================================================
+  # Certbot for SSL certificates
+  # ==========================================================================
+  certbot:
+    image: certbot/certbot
+    container_name: rendercv-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - rendercv-network
+    profiles:
+      - production
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+volumes:
+  rendercv-db-data:
+    driver: local
+  rendercv-redis-data:
+    driver: local
+  rendercv-storage:
+    driver: local
+  rendercv-logs:
+    driver: local
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  rendercv-network:
+    driver: bridge

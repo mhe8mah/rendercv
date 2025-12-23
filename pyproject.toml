@@ -68,6 +68,32 @@ full = [
     'typst>=0.14.4',         # Render PDF from Typst source files
     'rendercv-fonts>=0.5.1', # Font files for RenderCV
 ]
+web = [
+    # Web framework
+    'fastapi>=0.115.0',      # Web API framework
+    'uvicorn[standard]>=0.32.0',  # ASGI server
+    'python-multipart>=0.0.12',   # Form data parsing
+
+    # Database
+    'sqlalchemy[asyncio]>=2.0.36',  # ORM with async support
+    'aiosqlite>=0.20.0',     # SQLite async driver (development)
+    'asyncpg>=0.30.0',       # PostgreSQL async driver (production)
+
+    # Authentication
+    'python-jose[cryptography]>=3.3.0',  # JWT tokens
+    'passlib[bcrypt]>=1.7.4',  # Password hashing
+
+    # Task Queue
+    'redis>=5.2.0',          # Redis client
+    'rq>=2.0.0',             # Redis Queue for background tasks
+
+    # Storage
+    'aiofiles>=24.1.0',      # Async file operations
+    'aioboto3>=13.2.0',      # S3 client (optional)
+
+    # Configuration
+    'pydantic-settings>=2.6.0',  # Settings management
+]
 
 [project.urls]
 # URLs related to RenderCV. Listed under the "Project links" section on PyPI.
@@ -85,6 +111,9 @@ Changelog = 'https://docs.rendercv.com/changelog'
 # running `rendercv` in the terminal executes the function `entry_point` in
 # `src/rendercv/cli/entry_point.py`.
 rendercv = 'rendercv.cli.entry_point:entry_point'
+
+# Web server entry point (requires [web] extra)
+rendercv-web = 'rendercv.web.app:run_server'
 
 # Virtual Environment Dependencies:
 [dependency-groups]

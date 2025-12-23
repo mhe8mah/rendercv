@@ -1,4 +1,9 @@
-# Use a Python image with uv pre-installed
+# RenderCV SaaS - Production Dockerfile
+# Multi-stage build for optimized image size
+
+# ============================================================================
+# Stage 1: Build stage
+# ============================================================================
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 # Install the project into `/app`
@@ -15,20 +20,79 @@ ENV UV_LINK_MODE=copy
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-editable --extra full --no-default-groups
+    uv sync --frozen --no-install-project --no-editable --extra full --extra web --no-default-groups
 
 # Then, add the rest of the project source code and install it
 # Installing separately from its dependencies allows optimal layer caching
 COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-editable --extra full --no-default-groups
+    uv sync --frozen --no-editable --extra full --extra web --no-default-groups
 
-# Final stage
-FROM python:3.12-slim-bookworm
+# ============================================================================
+# Stage 2: Production API server
+# ============================================================================
+FROM python:3.12-slim-bookworm AS api
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    fontconfig \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f -v
 
 # Setup a non-root user
 RUN groupadd --system --gid 999 rendercv \
- && useradd --system --gid 999 --uid 999 --create-home rendercv
+    && useradd --system --gid 999 --uid 999 --create-home rendercv
+
+# Set working directory
+WORKDIR /app
+
+# Copy the virtual environment from the builder stage
+COPY --from=builder --chown=rendercv:rendercv /app/.venv /app/.venv
+
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH="/app/src" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Create directories for storage and logs
+RUN mkdir -p /app/storage /app/logs \
+    && chown -R rendercv:rendercv /app
+
+# Use the non-root user to run our application
+USER rendercv
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health/live || exit 1
+
+# Run the web server
+CMD ["uvicorn", "rendercv.web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ============================================================================
+# Stage 3: Worker for background job processing
+# ============================================================================
+FROM api AS worker
+
+# No health check for workers
+HEALTHCHECK NONE
+
+# Run the RQ worker
+CMD ["python", "-c", "from rendercv.web.tasks import start_worker; start_worker()"]
+
+# ============================================================================
+# Stage 4: CLI (original functionality)
+# ============================================================================
+FROM python:3.12-slim-bookworm AS cli
+
+# Setup a non-root user
+RUN groupadd --system --gid 999 rendercv \
+    && useradd --system --gid 999 --uid 999 --create-home rendercv
 
 # Set working directory
 WORKDIR /app
